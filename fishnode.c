@@ -2,6 +2,7 @@
 #include <assert.h>
 #include <signal.h>
 #include <string.h>
+#include "smartalloc.h"
 
 #define DEBUG
 
@@ -68,26 +69,59 @@ static void keyboard_callback(char *line)
 }
 
 void my_arp_resolution_cb(fn_l2addr_t resolved_l2_addr, void *param) {
-   uint8_t l2_frame_buffer = (uint8_t)param;
+   uint8_t *l2_frame_buffer = (uint8_t *)param;
 
-   if (resolved_l2_addr == NULL) {
-      free(resolved_l2_addr);
-      return
+   if (!FNL2_VALID(resolved_l2_addr)) {
+      free(l2_frame_buffer);
+      return;
    }
 
    // Successful ARP: Added dst l2 addr to l2 header
-   memcpy(l2_frame_buffer, resolved_l2_addr, sizeof(resolved_l2_addr));
+   memcpy(l2_frame_buffer, &resolved_l2_addr, sizeof(resolved_l2_addr));
 
-   // Calculate checksum
+
+   uint16_t packet_len = (l2_frame_buffer[14] << 8 | l2_frame_buffer[15]);
+
+   // Calculate checksum: place it in the header after dst and src addrs
+   uint8_t zeroedBytes[2] = {0, 0};
+   uint8_t *checksum_ptr = l2_frame_buffer + 12;
+   memcpy(checksum_ptr, zeroedBytes, sizeof(zeroedBytes));
+
+   uint16_t checksum = in_cksum(l2_frame_buffer, packet_len);
+   memcpy(checksum_ptr, &checksum, sizeof(checksum));
 
    // Send l2_frame_buffer using fish_l1_send()
-   
-   // Release l2_frame_buffer
+   fish_l1_send(l2_frame_buffer);
+
+   // Free l2 frame since we moved on and already made and sent the l1 frame above
+   free(l2_frame_buffer);
 }
 
 // Prototypes for program 2.  Taken directly from fish.h header file
 #ifdef L2_IMPL
 
+int my_fish_l2_send(void *l3frame, fnaddr_t next_hop, int len, uint8_t l2_proto)
+{
+   
+   // Construct L2 header to the frame. 17 + length of bytes
+   // Need to allocate memory for the entire packet (with the new header) now
+   uint8_t *l2_frame_buffer = (uint8_t *)smartalloc((unsigned long) (17 + len), "fishnode.c", 107, NULL);
+
+   memcpy((l2_frame_buffer + 17), (uint8_t *)l3frame, (size_t)len);  
+
+   // Fill in the L2 fields that are already known: src L2 addr, 
+   fn_l2addr_t l2_src_addr = fish_getl2address();
+   memcpy(l2_frame_buffer + 6, &l2_src_addr, sizeof(l2_src_addr)); 
+   
+   // Add the length of the entire L2 frame
+   uint16_t packet_len = len + 17;
+   memcpy(l2_frame_buffer + 14, &packet_len, sizeof(packet_len));
+
+   // Add L2 protocol  
+   l2_frame_buffer[16]= l2_proto;
+
+
+   fishnet_arp_functions.resolve_fnaddr(next_hop, my_arp_resolution_cb, l2_frame_buffer);
    /* Two Paths after we call resolve_fnaddr()
 
    - Cache hit:
@@ -99,27 +133,7 @@ void my_arp_resolution_cb(fn_l2addr_t resolved_l2_addr, void *param) {
       WONT CALL CALLBACK: Don't wait for return, once resolve_fnaddr() returns, 
                           we should return our l2_send() function.
    */
-int my_fish_l2_send(void *l3frame, fnaddr_t next_hop, int len, uint8_t l2_proto)
-{
-   
-   // Construct L2 header to the frame. 17 + length of bytes
-   // Need to allocate memory for the entire packet (with the new header) now
-   uint8_t *l2_frame_buffer = (uint8_t *)smartalloc((unsigned long) (17 + len), "fishnode.c", 87, NULL);
 
-   memcpy((l2_frame_buffer + 17), l3frame, (size_t)len);  
-
-   // Fill in the L2 fields that are already known: src L2 addr, 
-   fn_l2addr_t l2_src_addr = fish_getl2address();
-   memcpy(l2_frame_buffer + 6, l2_src_addr, sizeof(l2_src_addr)); 
-   
-   *(l2_frame_buffer + 12) = (uint8_t)(len + 17);     // Add the length of the entire L2 frame
-   *(l2_frame_buffer + 12) = (uint8_t)l2_proto;     // Add the L2 header size
-
-   
-
-
-   fishnet_arp_functions.resolve_fnaddr(next_hop, my_arp_resolution_cb, l2_frame_buffer);
-   
    return 0;
 }
 
@@ -136,6 +150,7 @@ void my_send_arp_request(fnaddr_t l3addr)
 {
 }
 
+// Full functionality
 void my_add_arp_entry(fn_l2addr_t l2addr, fnaddr_t addr, int timeout)
 {
 }
@@ -240,13 +255,13 @@ int main(int argc, char **argv)
 
 #ifdef L2_IMPL
    // Examples of overriding function pointers for program 2 base functionality
-   fish_l2.fishnode_l2_receive = &my_fishnode_l2_receive;
+   // fish_l2.fishnode_l2_receive = &my_fishnode_l2_receive;
    fish_l2.fish_l2_send = &my_fish_l2_send;
-   fish_arp.arp_received = &my_arp_received;
-   fish_arp.send_arp_request = &my_send_arp_request;
-   // Full functionality functions
-   fish_arp.add_arp_entry = &my_add_arp_entry;
-   fish_arp.resolve_fnaddr = &my_resolve_fnaddr;
+   // fish_arp.arp_received = &my_arp_received;
+   // fish_arp.send_arp_request = &my_send_arp_request;
+   // // Full functionality functions
+   // fish_arp.add_arp_entry = &my_add_arp_entry;
+   // fish_arp.resolve_fnaddr = &my_resolve_fnaddr;
 #endif
 
 #ifdef L3_IMPL
