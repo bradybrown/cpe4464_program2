@@ -23,7 +23,7 @@ else
 endif
 endif
 
-all:  trace-$(EXEC_SUFFIX)
+all:  fishnode-$(EXEC_SUFFIX)
 
 
 # TODO: Change files to this repo's names
