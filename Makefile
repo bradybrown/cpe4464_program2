@@ -28,8 +28,7 @@ all:  fishnode-$(EXEC_SUFFIX)
 
 # TODO: Change files to this repo's names
 fishnode-$(EXEC_SUFFIX): fishnode.c
-	$(CC) $(CFLAGS) $(OSINC) $(OSLIB) $(OSDEF) -o $@ fishnode.c
-
+	$(CC) $(CFLAGS) $(OSINC) $(OSLIB) $(OSDEF) -o $@ fishnode.c libfish-Linux-x86_64.c
 .PHONY: test
 
 test:
