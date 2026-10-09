@@ -80,7 +80,7 @@ void my_arp_resolution_cb(fn_l2addr_t resolved_l2_addr, void *param) {
    memcpy(l2_frame_buffer, &resolved_l2_addr, sizeof(resolved_l2_addr));
 
 
-   uint16_t packet_len = (l2_frame_buffer[14] << 8 | l2_frame_buffer[15]);
+   uint16_t packet_len = l2_frame_buffer[14] << 8 | l2_frame_buffer[15];
 
    // Calculate checksum: place it in the header after dst and src addrs
    uint8_t zeroedBytes[2] = {0, 0};
@@ -114,7 +114,7 @@ int my_fish_l2_send(void *l3frame, fnaddr_t next_hop, int len, uint8_t l2_proto)
    memcpy(l2_frame_buffer + 6, &l2_src_addr, sizeof(l2_src_addr)); 
    
    // Add the length of the entire L2 frame
-   uint16_t packet_len = len + 17;
+   uint16_t packet_len = htons(len + 17);
    memcpy(l2_frame_buffer + 14, &packet_len, sizeof(packet_len));
 
    // Add L2 protocol  
