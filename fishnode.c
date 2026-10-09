@@ -105,7 +105,7 @@ int my_fish_l2_send(void *l3frame, fnaddr_t next_hop, int len, uint8_t l2_proto)
    
    // Construct L2 header to the frame. 17 + length of bytes
    // Need to allocate memory for the entire packet (with the new header) now
-   uint8_t *l2_frame_buffer = (uint8_t *)smartalloc((unsigned long) (17 + len), "fishnode.c", 107, NULL);
+   uint8_t *l2_frame_buffer = (uint8_t *)smartalloc((unsigned long) (17 + len), "fishnode.c", 107, 0);
 
    memcpy((l2_frame_buffer + 17), (uint8_t *)l3frame, (size_t)len);  
 
@@ -121,7 +121,7 @@ int my_fish_l2_send(void *l3frame, fnaddr_t next_hop, int len, uint8_t l2_proto)
    l2_frame_buffer[16]= l2_proto;
 
 
-   fishnet_arp_functions.resolve_fnaddr(next_hop, my_arp_resolution_cb, l2_frame_buffer);
+   fish_arp.resolve_fnaddr(next_hop, my_arp_resolution_cb, l2_frame_buffer);
    /* Two Paths after we call resolve_fnaddr()
 
    - Cache hit:
@@ -139,6 +139,38 @@ int my_fish_l2_send(void *l3frame, fnaddr_t next_hop, int len, uint8_t l2_proto)
 
 int my_fishnode_l2_receive(void *l2frame)
 {
+   uint8_t *l2packet = (uint8_t *)l2frame;
+   uint16_t l2_frame_length = l2packet[14] << 8 | l2packet[15];   
+   
+   // If packet length invalid, drop this packet: don't pass it through by calling l3 receive
+   if (l2_frame_length < 17 || l2_frame_length > MTU) {return 0;}
+   
+   // Checksum invalid, drop this packet
+   if (in_cksum(l2frame, l2_frame_length)) {return 0;}
+
+   // Ensure the L2 dest addr matches the addr of this node
+   fn_l2addr_t node_addr = fish_getl2address(); 
+   fn_l2addr_t dest_addr;
+   memcpy(&dest_addr, l2packet, 6);
+   if (!FNL2_EQ(node_addr, dest_addr) &&
+       !FNL2_EQ(ALL_L2_NEIGHBORS, dest_addr)) {return 0;}
+
+
+   // Decapsulate
+   uint8_t *l3packet = l2packet + 17;
+   uint8_t protocol = l2packet[16];
+
+   switch (protocol) {
+      case 1:  // L3 Protocol
+         fish_l3.fish_l3_receive(l3packet, l2_frame_length - 17, protocol);
+         break;
+      case 2:  // ARP Protocol
+         fish_arp.arp_received(l2frame);
+         break;
+      default: // Unknown protocol, drop packet 
+         break;
+   }
+
    return 0;
 }
 
