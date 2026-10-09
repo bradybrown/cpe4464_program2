@@ -35,7 +35,7 @@ test:
 	./run_tests.sh
 
 handin: README
-	~bellardo/bin/rcvhandin bellardo p2 fishnode.c fishnode.h README Makefile
+	~bellardo/bin/rcvhandin bellardo p2 fishnode.c README Makefile
 
 clean:
 	rm -rf trace-* trace-*.dSYM
