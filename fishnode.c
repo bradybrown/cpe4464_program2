@@ -324,7 +324,8 @@ int main(int argc, char **argv)
     * protocol to be enabled. */
    // fish_enable_lsarouting_builtin(0);
 
-#if 0
+// TODO: Change back to 0 once done with testing
+#if 1 
    /* Full-featured DV routing.  I suggest NOT using this until you have some
     * reasonable expectation that your code works.  This generates a lot of
     * routing traffic in fishnet */
