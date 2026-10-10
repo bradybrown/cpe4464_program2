@@ -265,7 +265,7 @@ void my_send_arp_request(fnaddr_t l3addr)
    uint32_t query_type = htonl(1);  
    memcpy(l2_arp_packet + 17, &query_type, sizeof(query_type));
    memcpy(l2_arp_packet + 17 + 4, &l3addr, sizeof(fnaddr_t));
-   fn_l2addr_t l2_resolved_addr = {0, 0, 0, 0, 0, 0};
+   fn_l2addr_t l2_resolved_addr = {{0}};
    memcpy(l2_arp_packet + 17 + 8, &l2_resolved_addr, sizeof(l2_resolved_addr));
 
    
@@ -292,6 +292,10 @@ void my_resolve_fnaddr(fnaddr_t addr, arp_resolution_cb cb, void *param)
 #ifdef L3_IMPL
 int my_fishnode_l3_receive(void *l3frame, int len)
 {
+   
+   
+   
+   
    return 0;
 }
 
