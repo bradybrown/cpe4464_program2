@@ -8,7 +8,7 @@
 
 // Set this to use my functions instead of the library functions
 #define L2_IMPL
-
+// #define L3_IMPL
 
 static int noprompt = 0;
 
@@ -94,7 +94,7 @@ void my_arp_resolution_cb(fn_l2addr_t resolved_l2_addr, void *param) {
    fish_l1_send(l2_frame_buffer);
 
    // Free l2 frame since we moved on and already made and sent the l1 frame above
-   free(l2_frame_buffer);
+   smartfree(l2_frame_buffer,"fishnode.c", 97);
 }
 
 // Prototypes for program 2.  Taken directly from fish.h header file
@@ -105,7 +105,7 @@ int my_fish_l2_send(void *l3frame, fnaddr_t next_hop, int len, uint8_t l2_proto)
    
    // Construct L2 header to the frame. 17 + length of bytes
    // Need to allocate memory for the entire packet (with the new header) now
-   uint8_t *l2_frame_buffer = (uint8_t *)smartalloc((unsigned long) (17 + len), "fishnode.c", 107, 0);
+   uint8_t *l2_frame_buffer = (uint8_t *)smartalloc((unsigned long) (17 + len), "fishnode.c", 108, 0);
 
    memcpy((l2_frame_buffer + 17), (uint8_t *)l3frame, (size_t)len);  
 
@@ -176,10 +176,107 @@ int my_fishnode_l2_receive(void *l2frame)
 
 void my_arp_received(void *l2frame)
 {
+   uint8_t *l2packet = (uint8_t *)l2frame;
+   uint16_t l2_frame_length = l2packet[14] << 8 | l2packet[15];  
+   if (l2_frame_length != 31) {
+      // This packet should only be 17 + 14 bytes. Otherwise, drop packet
+      return;
+   }
+
+   // Extract the 4-byte query type
+   uint32_t query_type;
+   memcpy(&query_type, l2packet + 17, 4);
+   query_type = ntohl(query_type);
+
+   fnaddr_t queried_l3_addr;
+   memcpy(&queried_l3_addr, (l2packet + 17 + 4), sizeof(queried_l3_addr));
+
+   if (query_type == 1) {        // ARP Request
+
+      // Check if this node l3 addr matches the ARP's 
+      if (queried_l3_addr == fish_getaddress()) {
+         // Construct unicast response packet 
+         uint8_t *new_l2frame = (uint8_t *)smartalloc(l2_frame_length, "fishnode.c", 195, 0);
+         
+         // Set L2 dest = requester's l2, L2 src = this node l2
+         memcpy(new_l2frame, l2packet + 6, 6);
+         fn_l2addr_t node_l2_addr = fish_getl2address();
+         memcpy(new_l2frame + 6, &node_l2_addr, sizeof(node_l2_addr));
+
+         // Set l2 length field
+         uint16_t net_l2frame_len = htons(l2_frame_length);
+         memcpy(new_l2frame + 14, &net_l2frame_len, 2);  
+
+         new_l2frame[16] = 2;    // Set l2 protocol = ARP
+         uint32_t response_query_type = htonl(2); 
+         memcpy(new_l2frame + 17, &response_query_type, sizeof(response_query_type));
+         memcpy(new_l2frame + 17 + 4, &queried_l3_addr, sizeof(queried_l3_addr));
+         memcpy(new_l2frame + 17 + 8, &node_l2_addr, sizeof(node_l2_addr));
+         
+         // New checksum
+         new_l2frame[12] = 0;
+         new_l2frame[13] = 0;
+         uint16_t checksum = in_cksum(new_l2frame, l2_frame_length); 
+         memcpy(new_l2frame + 12, &checksum, sizeof(checksum));
+
+         fish_l1_send(new_l2frame);    // Send unicast ARP Response
+         smartfree(new_l2frame,"fishnode.c", 219);
+         return;
+      }
+
+      // Didn't match, we ignore and return
+      else { 
+         return;
+      }
+
+   }
+   else if (query_type == 2) {   // ARP Response   
+
+      fn_l2addr_t response_arp_l2_addr;
+      memcpy(&response_arp_l2_addr, l2packet + 17 + 8, sizeof(response_arp_l2_addr)); 
+      
+      // Add the mapping of the desired l3 addr to the discovered l2 addr
+      fish_arp.add_arp_entry(response_arp_l2_addr, queried_l3_addr, 180);
+      return;
+   }
+   else {
+      // Unrecognized type, drop packet
+      return;
+   }
 }
 
 void my_send_arp_request(fnaddr_t l3addr)
 {
+   // Construct ARP packet
+   uint16_t host_length = 17 + 14;
+   uint8_t *l2_arp_packet = (uint8_t *)smartalloc(host_length, "fishnode.c", 248, 0);
+   
+   // l2 header part
+   fn_l2addr_t l2_dest = ALL_L2_NEIGHBORS; 
+   fn_l2addr_t l2_src = fish_getl2address();
+   uint16_t net_length = htons(host_length);
+   memcpy(l2_arp_packet, &l2_dest, sizeof(l2_dest));
+   memcpy(l2_arp_packet + 6, &l2_src, sizeof(l2_src));
+   //     l2_arp_packet + 12, Populate checksum field later
+   memcpy(l2_arp_packet + 14, &net_length, sizeof(net_length));
+   l2_arp_packet[16] = 2; // ARP l2 Protocol
+
+   // l3 payload (ARP header)
+   uint32_t query_type = htonl(1);  
+   memcpy(l2_arp_packet + 17, &query_type, sizeof(query_type));
+   memcpy(l2_arp_packet + 17 + 4, &l3addr, sizeof(fnaddr_t));
+   fn_l2addr_t l2_resolved_addr = {0, 0, 0, 0, 0, 0};
+   memcpy(l2_arp_packet + 17 + 8, &l2_resolved_addr, sizeof(l2_resolved_addr));
+
+   
+   // Fill in checksum field last
+   l2_arp_packet[12] = 0;
+   l2_arp_packet[13] = 0;
+   uint16_t checksum = in_cksum(l2_arp_packet, host_length);  
+   memcpy(l2_arp_packet + 12, &checksum, sizeof(checksum));
+
+   fish_l1_send(l2_arp_packet);
+   smartfree(l2_arp_packet, "fishnode.c", 275);
 }
 
 // Full functionality
@@ -287,10 +384,10 @@ int main(int argc, char **argv)
 
 #ifdef L2_IMPL
    // Examples of overriding function pointers for program 2 base functionality
-   // fish_l2.fishnode_l2_receive = &my_fishnode_l2_receive;
+   fish_l2.fishnode_l2_receive = &my_fishnode_l2_receive;
    fish_l2.fish_l2_send = &my_fish_l2_send;
-   // fish_arp.arp_received = &my_arp_received;
-   // fish_arp.send_arp_request = &my_send_arp_request;
+   fish_arp.arp_received = &my_arp_received;
+   fish_arp.send_arp_request = &my_send_arp_request;
    // // Full functionality functions
    // fish_arp.add_arp_entry = &my_add_arp_entry;
    // fish_arp.resolve_fnaddr = &my_resolve_fnaddr;
