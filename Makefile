@@ -39,4 +39,4 @@ handin: README
 	~bellardo/bin/rcvhandin bellardo p2 fishnode.c README Makefile $(GIVEN_FILES)
 
 clean:
-	rm -rf trace-* trace-*.dSYM
+	rm -rf fishnode-* fishnode-*.dSYM

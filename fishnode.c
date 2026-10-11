@@ -282,6 +282,7 @@ void my_send_arp_request(fnaddr_t l3addr)
 // Full functionality
 void my_add_arp_entry(fn_l2addr_t l2addr, fnaddr_t addr, int timeout)
 {
+
 }
 
 void my_resolve_fnaddr(fnaddr_t addr, arp_resolution_cb cb, void *param)
@@ -290,12 +291,8 @@ void my_resolve_fnaddr(fnaddr_t addr, arp_resolution_cb cb, void *param)
 #endif
 
 #ifdef L3_IMPL
-int my_fishnode_l3_receive(void *l3frame, int len)
+int my_fishnode_l3_receive(void *l3frame, int len, uint8_t protocol)
 {
-   
-   
-   
-   
    return 0;
 }
 
@@ -392,7 +389,7 @@ int main(int argc, char **argv)
    fish_l2.fish_l2_send = &my_fish_l2_send;
    fish_arp.arp_received = &my_arp_received;
    fish_arp.send_arp_request = &my_send_arp_request;
-   // // Full functionality functions
+   // Full functionality functions
    // fish_arp.add_arp_entry = &my_add_arp_entry;
    // fish_arp.resolve_fnaddr = &my_resolve_fnaddr;
 #endif
