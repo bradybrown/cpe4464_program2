@@ -3,6 +3,7 @@
 #include <signal.h>
 #include <string.h>
 #include "smartalloc.h"
+#include "fishnode.h"
 
 #define DEBUG
 
@@ -11,6 +12,7 @@
 // #define L3_IMPL
 
 static int noprompt = 0;
+Arp_Entry *arp_table_head = NULL;  
 
 void sigint_handler(int sig)
 {
@@ -69,32 +71,32 @@ static void keyboard_callback(char *line)
 }
 
 void my_arp_resolution_cb(fn_l2addr_t resolved_l2_addr, void *param) {
-   uint8_t *l2_frame_buffer = (uint8_t *)param;
+   uint8_t *l2_frame = (uint8_t *)param;
 
    if (!FNL2_VALID(resolved_l2_addr)) {
-      free(l2_frame_buffer);
+      free(l2_frame);
       return;
    }
 
    // Successful ARP: Added dst l2 addr to l2 header
-   memcpy(l2_frame_buffer, &resolved_l2_addr, sizeof(resolved_l2_addr));
+   memcpy(l2_frame, &resolved_l2_addr, sizeof(resolved_l2_addr));
 
 
-   uint16_t packet_len = l2_frame_buffer[14] << 8 | l2_frame_buffer[15];
+   uint16_t packet_len = l2_frame[14] << 8 | l2_frame[15];
 
    // Calculate checksum: place it in the header after dst and src addrs
    uint8_t zeroedBytes[2] = {0, 0};
-   uint8_t *checksum_ptr = l2_frame_buffer + 12;
+   uint8_t *checksum_ptr = l2_frame + 12;
    memcpy(checksum_ptr, zeroedBytes, sizeof(zeroedBytes));
 
-   uint16_t checksum = in_cksum(l2_frame_buffer, packet_len);
+   uint16_t checksum = in_cksum(l2_frame, packet_len);
    memcpy(checksum_ptr, &checksum, sizeof(checksum));
 
-   // Send l2_frame_buffer using fish_l1_send()
-   fish_l1_send(l2_frame_buffer);
+   // Send l2_frame using fish_l1_send()
+   fish_l1_send(l2_frame);
 
    // Free l2 frame since we moved on and already made and sent the l1 frame above
-   smartfree(l2_frame_buffer,"fishnode.c", 97);
+   smartfree(l2_frame,"fishnode.c", 97);
 }
 
 // Prototypes for program 2.  Taken directly from fish.h header file
@@ -105,23 +107,23 @@ int my_fish_l2_send(void *l3frame, fnaddr_t next_hop, int len, uint8_t l2_proto)
    
    // Construct L2 header to the frame. 17 + length of bytes
    // Need to allocate memory for the entire packet (with the new header) now
-   uint8_t *l2_frame_buffer = (uint8_t *)smartalloc((unsigned long) (17 + len), "fishnode.c", 108, 0);
+   uint8_t *l2_frame = (uint8_t *)smartalloc((unsigned long) (17 + len), "fishnode.c", 108, 0);
 
-   memcpy((l2_frame_buffer + 17), (uint8_t *)l3frame, (size_t)len);  
+   memcpy((l2_frame + 17), (uint8_t *)l3frame, (size_t)len);  
 
    // Fill in the L2 fields that are already known: src L2 addr, 
    fn_l2addr_t l2_src_addr = fish_getl2address();
-   memcpy(l2_frame_buffer + 6, &l2_src_addr, sizeof(l2_src_addr)); 
+   memcpy(l2_frame + 6, &l2_src_addr, sizeof(l2_src_addr)); 
    
    // Add the length of the entire L2 frame
    uint16_t packet_len = htons(len + 17);
-   memcpy(l2_frame_buffer + 14, &packet_len, sizeof(packet_len));
+   memcpy(l2_frame + 14, &packet_len, sizeof(packet_len));
 
    // Add L2 protocol  
-   l2_frame_buffer[16]= l2_proto;
+   l2_frame[16]= l2_proto;
 
 
-   fish_arp.resolve_fnaddr(next_hop, my_arp_resolution_cb, l2_frame_buffer);
+   fish_arp.resolve_fnaddr(next_hop, my_arp_resolution_cb, l2_frame);
    /* Two Paths after we call resolve_fnaddr()
 
    - Cache hit:
@@ -134,6 +136,7 @@ int my_fish_l2_send(void *l3frame, fnaddr_t next_hop, int len, uint8_t l2_proto)
                           we should return our l2_send() function.
    */
 
+   // The callback function frees l2_frame
    return 0;
 }
 
@@ -208,7 +211,7 @@ void my_arp_received(void *l2frame)
          memcpy(new_l2frame + 14, &net_l2frame_len, 2);  
 
          new_l2frame[16] = 2;    // Set l2 protocol = ARP
-         uint32_t response_query_type = htonl(2); 
+         uint32_t response_query_type = htonl(2);     // ARP Reply packet
          memcpy(new_l2frame + 17, &response_query_type, sizeof(response_query_type));
          memcpy(new_l2frame + 17 + 4, &queried_l3_addr, sizeof(queried_l3_addr));
          memcpy(new_l2frame + 17 + 8, &node_l2_addr, sizeof(node_l2_addr));
@@ -280,13 +283,86 @@ void my_send_arp_request(fnaddr_t l3addr)
 }
 
 // Full functionality
+void arp_entry_expired(void *arg) {
+   if (arp_table_head == NULL) {return;}
+
+   Arp_Entry *node = arp_table_head;
+   Arp_Entry *arp_entry = (Arp_Entry *)arg;
+
+   // If the expired entry is the head
+   if (node == arp_entry) {
+      arp_table_head = arp_entry->next_entry;
+
+      smartfree(arp_entry, "fishnode.c", 296);
+      return;
+   }
+
+   while (node->next_entry != NULL) {
+      if (node->next_entry == arp_entry) {
+         // Unlink and free
+         node->next_entry = arp_entry->next_entry;
+         smartfree(arp_entry, "fishnode.c", 305);
+         return;
+      }
+      node = node->next_entry; 
+   }
+
+}
+
 void my_add_arp_entry(fn_l2addr_t l2addr, fnaddr_t addr, int timeout)
 {
+   // Check if entry already exists
+   Arp_Entry *current_node = arp_table_head;
+
+   if (current_node != NULL) {
+      while (current_node->next_entry != NULL && current_node->l3addr != addr) {
+         current_node = current_node->next_entry;
+      }
+   }
+   
+   if (current_node->l3addr == addr && current_node != NULL) {
+      // Update the l2 and reset the timeout
+      current_node->l2addr = l2addr;
+      fish_cancelevent(current_node->handle);
+      current_node->handle = fish_scheduleevent(timeout * 1000, &arp_entry_expired, current_node);
+   } 
+   else {
+      Arp_Entry *new_entry = (Arp_Entry *)smartalloc(sizeof(Arp_Entry), "fishnode.c", 291, 0);
+      new_entry->l2addr = l2addr;
+      new_entry->l3addr = addr;
+      new_entry->handle = fish_scheduleevent(timeout * 1000, arp_entry_expired, new_entry);
+      new_entry->next_entry = NULL;
+      
+      if (arp_table_head == NULL) {
+         arp_table_head = new_entry;
+      }
+      else {
+         current_node->next_entry = new_entry;
+      }
+   }
 
 }
 
 void my_resolve_fnaddr(fnaddr_t addr, arp_resolution_cb cb, void *param)
 {
+   /* 
+   Check ARP Cache:
+   - Cache hit:
+      Returns after ~ 1ms
+      Calls Callback
+
+   - Cache Miss:
+      Start an ARP request to do the mapping. This proccess could take until 
+      10s (timeout = invalid addr) or anytime less using ARP to find the addr. 
+      WONT CALL CALLBACK: Don't wait for return, once resolve_fnaddr() returns, 
+                          we should return our l2_send() function.
+   */
+
+
+
+
+
+
 }
 #endif
 
@@ -454,6 +530,15 @@ int main(int argc, char **argv)
    fishnet_cleanup();
 
    // Cleanup your data structures here
-
+   Arp_Entry *next_node = arp_table_head->next_entry;
+   if (arp_table_head != NULL) {
+      smartfree(arp_table_head, "fishnode.c", 499);
+   }
+   while (next_node != NULL) {
+      Arp_Entry *tmp_ptr = next_node;
+      smartfree(next_node, "fishnode.c", 503);
+      next_node = tmp_ptr->next_entry;
+   }
+   
 	return 0;
 }
