@@ -466,7 +466,7 @@ int main(int argc, char **argv)
    fish_arp.arp_received = &my_arp_received;
    fish_arp.send_arp_request = &my_send_arp_request;
    // Full functionality functions
-   // fish_arp.add_arp_entry = &my_add_arp_entry;
+   fish_arp.add_arp_entry = &my_add_arp_entry;
    // fish_arp.resolve_fnaddr = &my_resolve_fnaddr;
 #endif
 
