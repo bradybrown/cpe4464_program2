@@ -320,7 +320,7 @@ void my_add_arp_entry(fn_l2addr_t l2addr, fnaddr_t addr, int timeout)
       }
    }
    
-   if (current_node->l3addr == addr && current_node != NULL) {
+   if (current_node != NULL && current_node->l3addr == addr) {
       // Update the l2 and reset the timeout
       current_node->l2addr = l2addr;
       fish_cancelevent(current_node->handle);
@@ -530,15 +530,16 @@ int main(int argc, char **argv)
    fishnet_cleanup();
 
    // Cleanup your data structures here
-   Arp_Entry *next_node = arp_table_head->next_entry;
-   if (arp_table_head != NULL) {
-      smartfree(arp_table_head, "fishnode.c", 499);
-   }
-   while (next_node != NULL) {
-      Arp_Entry *tmp_ptr = next_node;
-      smartfree(next_node, "fishnode.c", 503);
-      next_node = tmp_ptr->next_entry;
-   }
    
+   if (arp_table_head != NULL) {
+       Arp_Entry *next_node = arp_table_head->next_entry;
+      smartfree(arp_table_head, "fishnode.c", 536);
+
+      while (next_node != NULL) {
+         Arp_Entry *tmp_ptr = next_node->next_entry;
+         smartfree(next_node, "fishnode.c", 540);
+         next_node = tmp_ptr;
+      }
+   }
 	return 0;
 }
