@@ -15,3 +15,6 @@ typedef struct Arp_Entry {
 
 
 void my_arp_resolution_cb(fn_l2addr_t resolved_l2_addr, void *param);
+
+// Full functionality
+void arp_entry_expired(void *arg);
