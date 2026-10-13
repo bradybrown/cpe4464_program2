@@ -13,6 +13,7 @@
 
 static int noprompt = 0;
 Arp_Entry *arp_table_head = NULL;  
+Pending_ARP *pending_arp_head = NULL;
 
 void sigint_handler(int sig)
 {
@@ -74,7 +75,7 @@ void my_arp_resolution_cb(fn_l2addr_t resolved_l2_addr, void *param) {
    uint8_t *l2_frame = (uint8_t *)param;
 
    if (!FNL2_VALID(resolved_l2_addr)) {
-      free(l2_frame);
+      smartfree(l2_frame, "fishnode.c", __LINE__);
       return;
    }
 
@@ -96,7 +97,7 @@ void my_arp_resolution_cb(fn_l2addr_t resolved_l2_addr, void *param) {
    fish_l1_send(l2_frame);
 
    // Free l2 frame since we moved on and already made and sent the l1 frame above
-   smartfree(l2_frame,"fishnode.c", 97);
+   smartfree(l2_frame,"fishnode.c", __LINE__);
 }
 
 // Prototypes for program 2.  Taken directly from fish.h header file
@@ -223,7 +224,7 @@ void my_arp_received(void *l2frame)
          memcpy(new_l2frame + 12, &checksum, sizeof(checksum));
 
          fish_l1_send(new_l2frame);    // Send unicast ARP Response
-         smartfree(new_l2frame,"fishnode.c", 219);
+         smartfree(new_l2frame,"fishnode.c", __LINE__);
          return;
       }
 
@@ -279,7 +280,7 @@ void my_send_arp_request(fnaddr_t l3addr)
    memcpy(l2_arp_packet + 12, &checksum, sizeof(checksum));
 
    fish_l1_send(l2_arp_packet);
-   smartfree(l2_arp_packet, "fishnode.c", 275);
+   smartfree(l2_arp_packet, "fishnode.c", __LINE__);
 }
 
 // Full functionality
@@ -293,7 +294,7 @@ void arp_entry_expired(void *arg) {
    if (node == arp_entry) {
       arp_table_head = arp_entry->next_entry;
 
-      smartfree(arp_entry, "fishnode.c", 296);
+      smartfree(arp_entry, "fishnode.c", __LINE__);
       return;
    }
 
@@ -301,7 +302,7 @@ void arp_entry_expired(void *arg) {
       if (node->next_entry == arp_entry) {
          // Unlink and free
          node->next_entry = arp_entry->next_entry;
-         smartfree(arp_entry, "fishnode.c", 305);
+         smartfree(arp_entry, "fishnode.c", __LINE__);
          return;
       }
       node = node->next_entry; 
@@ -324,10 +325,10 @@ void my_add_arp_entry(fn_l2addr_t l2addr, fnaddr_t addr, int timeout)
       // Update the l2 and reset the timeout
       current_node->l2addr = l2addr;
       fish_cancelevent(current_node->handle);
-      current_node->handle = fish_scheduleevent(timeout * 1000, &arp_entry_expired, current_node);
+      current_node->handle = fish_scheduleevent(timeout * 1000, arp_entry_expired, current_node);
    } 
    else {
-      Arp_Entry *new_entry = (Arp_Entry *)smartalloc(sizeof(Arp_Entry), "fishnode.c", 291, 0);
+      Arp_Entry *new_entry = (Arp_Entry *)smartalloc(sizeof(Arp_Entry), "fishnode.c", __LINE__, 0);
       new_entry->l2addr = l2addr;
       new_entry->l3addr = addr;
       new_entry->handle = fish_scheduleevent(timeout * 1000, arp_entry_expired, new_entry);
@@ -341,6 +342,95 @@ void my_add_arp_entry(fn_l2addr_t l2addr, fnaddr_t addr, int timeout)
       }
    }
 
+   // Search pending ARP requests for this l3 address
+   Pending_ARP *pending_node = pending_arp_head;
+   Pending_ARP *previous_pending = NULL;
+
+   while (pending_node != NULL && pending_node->l3addr != addr) {
+      previous_pending = pending_node;
+      pending_node = pending_node->next_arp;
+   }
+
+   // No packets were waiting for this ARP resolution
+   if (pending_node == NULL) {
+      return;
+   }
+
+   // Stop retrying since an ARP response was received
+   fish_cancelevent(pending_node->timer);
+
+   // Send every packet that was waiting for this l3 address
+   Pending_Packet *packet_node = pending_node->waiting;
+
+   while (packet_node != NULL) {
+      Pending_Packet *next_packet = packet_node->next_packet;
+
+      // Send/drop the packet (callback handles the frame)
+      packet_node->cb(l2addr, packet_node->param);
+      // After callback, we can free this packet
+      smartfree(packet_node, "fishnode.c", __LINE__);
+      packet_node = next_packet;
+   }
+
+   // Remove this resolved ARP request from the pending ARP list
+   if (previous_pending == NULL) {
+      pending_arp_head = pending_node->next_arp;
+   }
+   else {
+      previous_pending->next_arp = pending_node->next_arp;
+   }
+
+   smartfree(pending_node, "fishnode.c", __LINE__);
+}
+
+
+void arp_retry(void *arg) {
+
+   Pending_ARP *pending = (Pending_ARP *)arg;
+
+   // Keep retrying every 2.5 secs, if we are less than 4 attempts
+   if (pending->requests_sent < 4) {
+      fish_arp.send_arp_request(pending->l3addr);
+      pending->requests_sent += 1;
+
+      pending->timer = fish_scheduleevent(2500, arp_retry, pending);
+      return;
+   }
+
+   // Failed 4 times, delete the queued packets (invalid l2 and free these nodes) 
+   fn_l2addr_t invalid_l2_addr = {{0}};
+   Pending_Packet *packet_node = pending->waiting;
+
+   while (packet_node != NULL) {
+      Pending_Packet *next_packet = packet_node->next_packet;
+
+      packet_node->cb(invalid_l2_addr, packet_node->param);
+      smartfree(packet_node, "fishnode.c", __LINE__);
+
+      packet_node = next_packet;
+   }
+
+   // Remove pending from arp_head and free  
+   Pending_ARP *pending_node = pending_arp_head;
+   Pending_ARP *prev_pending = NULL;
+   while (pending_node != NULL && pending_node != pending) {
+      prev_pending = pending_node;
+      pending_node = pending_node->next_arp;
+   }
+
+   // We should always find the node, but this is a safety check (no segfaults)
+   if (pending_node == NULL) {return;}
+
+   // If its the head, change the head to the next node
+   if (prev_pending == NULL) {
+      pending_arp_head = pending_node->next_arp;
+   }
+   else {
+      // Otherwise, we skip the node and free it
+      prev_pending->next_arp = pending_node->next_arp;
+   }
+
+   smartfree(pending_node, "fishnode.c", __LINE__);
 }
 
 void my_resolve_fnaddr(fnaddr_t addr, arp_resolution_cb cb, void *param)
@@ -350,18 +440,87 @@ void my_resolve_fnaddr(fnaddr_t addr, arp_resolution_cb cb, void *param)
    - Cache hit:
       Returns after ~ 1ms
       Calls Callback
+   */
+   Arp_Entry *current_entry = arp_table_head;
+   while (current_entry != NULL) {
+      if (current_entry->l3addr == addr) {
+         cb(current_entry->l2addr, param);
+         return;
+      }
+      current_entry = current_entry->next_entry;
+   }
 
+   /*
    - Cache Miss:
       Start an ARP request to do the mapping. This proccess could take until 
       10s (timeout = invalid addr) or anytime less using ARP to find the addr. 
       WONT CALL CALLBACK: Don't wait for return, once resolve_fnaddr() returns, 
                           we should return our l2_send() function.
+          search pending-ARP list for address
    */
 
+   // Search pending ARP requests for this l3 address
+   Pending_ARP *pending_node = pending_arp_head;
+   Pending_ARP *previous_pending = NULL;
 
+   while (pending_node != NULL && pending_node->l3addr != addr) {
+      previous_pending = pending_node;
+      pending_node = pending_node->next_arp;
+   }
 
+   // If we dont have a pending arp in the queue yet
+   if (pending_node == NULL) {
+      // Create new entry for the pending arp requests
+      Pending_ARP *new_pending = (Pending_ARP *)smartalloc(
+                  sizeof(Pending_ARP), "fishnode.c", __LINE__, 0);
+      new_pending->l3addr = addr;
+      new_pending->requests_sent = 1;     // ARP req is sent immediately = 1
+      new_pending->next_arp = NULL;
 
+      // Add our packet to this new pending arp entry
+      Pending_Packet *new_packet = (Pending_Packet *)smartalloc(
+                  sizeof(Pending_Packet), "fishnode.c", __LINE__, 0);
+      new_packet->cb = cb;
+      new_packet->param = param;
+      new_packet->next_packet = NULL;
 
+      new_pending->waiting = new_packet;
+
+      // Add new pending arp to linked list
+      if (previous_pending == NULL) {
+         pending_arp_head = new_pending;
+      } 
+      else {
+         previous_pending->next_arp = new_pending;
+      }
+      
+
+      // Send the first ARP Request immediately
+      fish_arp.send_arp_request(addr);
+
+      // Schedule retry arp request every 2.5 secs, until we hit 4 tries
+      new_pending->timer = fish_scheduleevent(2500, arp_retry, new_pending);
+      return;
+   }
+
+   // We our pending_node matches the l3 addr
+   Pending_Packet *new_packet = (Pending_Packet *)smartalloc(
+               sizeof(Pending_Packet), "fishnode.c", __LINE__, 0);
+   new_packet->cb = cb;
+   new_packet->param = param;
+   new_packet->next_packet = NULL;
+
+   // Append to pending_node->waiting
+   Pending_Packet *cur = pending_node->waiting;
+   if (cur == NULL) {
+      pending_node->waiting = new_packet;
+   }
+   else {
+      while(cur->next_packet != NULL) {
+         cur = cur->next_packet;
+      }
+      cur->next_packet = new_packet;
+   }
 
 }
 #endif
@@ -467,7 +626,7 @@ int main(int argc, char **argv)
    fish_arp.send_arp_request = &my_send_arp_request;
    // Full functionality functions
    fish_arp.add_arp_entry = &my_add_arp_entry;
-   // fish_arp.resolve_fnaddr = &my_resolve_fnaddr;
+   fish_arp.resolve_fnaddr = &my_resolve_fnaddr;
 #endif
 
 #ifdef L3_IMPL
@@ -531,15 +690,53 @@ int main(int argc, char **argv)
 
    // Cleanup your data structures here
    
+   // Free all ARP Table entries
    if (arp_table_head != NULL) {
        Arp_Entry *next_node = arp_table_head->next_entry;
-      smartfree(arp_table_head, "fishnode.c", 536);
+      smartfree(arp_table_head, "fishnode.c", __LINE__);
 
       while (next_node != NULL) {
-         Arp_Entry *tmp_ptr = next_node->next_entry;
-         smartfree(next_node, "fishnode.c", 540);
-         next_node = tmp_ptr;
+         Arp_Entry *next = next_node->next_entry;
+         smartfree(next_node, "fishnode.c", __LINE__);
+         next_node = next;
       }
    }
+   arp_table_head = NULL;
+
+
+   // Free all Pending ARPs and their waiting packets
+   Pending_ARP *cur_pending = pending_arp_head;
+   Pending_ARP *next_pending = NULL;
+
+   pending_arp_head = NULL;
+   fn_l2addr_t invalidl2 = {{0}};
+
+   while (cur_pending != NULL) {
+      next_pending = cur_pending->next_arp;
+      
+      Pending_Packet *cur_pkt = cur_pending->waiting;
+      Pending_Packet *next_pkt = cur_pkt->next_packet;
+      
+      // Clear the timeout event
+      if (cur_pending->timer > 0) {
+         fish_cancelevent(cur_pending->timer);
+      }
+
+      // Loop through all queued packets
+      while (cur_pkt != NULL) {
+         next_pkt = cur_pkt->next_packet;
+         
+         // Free the packets
+         cur_pkt->cb(invalidl2, cur_pkt->param);
+         smartfree(cur_pkt, "filenode.c", __LINE__);
+
+         cur_pkt = next_pkt;
+      }
+
+      // Free the Pending ARP now that we cleanly freed the packets
+      smartfree(cur_pending, "fishnode.c", __LINE__);
+      cur_pending = next_pending;
+   }   
+
 	return 0;
 }
