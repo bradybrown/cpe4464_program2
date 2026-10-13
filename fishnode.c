@@ -715,7 +715,6 @@ int main(int argc, char **argv)
       next_pending = cur_pending->next_arp;
       
       Pending_Packet *cur_pkt = cur_pending->waiting;
-      Pending_Packet *next_pkt = cur_pkt->next_packet;
       
       // Clear the timeout event
       if (cur_pending->timer > 0) {
@@ -724,11 +723,11 @@ int main(int argc, char **argv)
 
       // Loop through all queued packets
       while (cur_pkt != NULL) {
-         next_pkt = cur_pkt->next_packet;
+         Pending_Packet * next_pkt = cur_pkt->next_packet;
          
          // Free the packets
          cur_pkt->cb(invalidl2, cur_pkt->param);
-         smartfree(cur_pkt, "filenode.c", __LINE__);
+         smartfree(cur_pkt, "fishnode.c", __LINE__);
 
          cur_pkt = next_pkt;
       }

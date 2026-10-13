@@ -34,9 +34,9 @@ fishnode-$(EXEC_SUFFIX): fishnode.c
 test:
 	./run_tests.sh
 
-GIVEN_FILES = fish.h libfish-Linux-x86_64.a smartalloc.c smartalloc.h fishnode.h
+GIVEN_FILES = fish.h libfish-Linux-x86_64.a smartalloc.c smartalloc.h 
 handin: README
-	~bellardo/bin/rcvhandin bellardo p2 fishnode.c README Makefile $(GIVEN_FILES)
+	~bellardo/bin/rcvhandin bellardo p2 fishnode.c fishnode.h README Makefile $(GIVEN_FILES)
 
 clean:
 	rm -rf fishnode-* fishnode-*.dSYM
